@@ -90,7 +90,7 @@ def warmup_model(model_id: str = None):
         model = get_model(model_id)
         print("TTS warm-up: model loaded.")
         
-        is_custom_voice = getattr(model.model.config, "tts_model_type", None) == "custom_voice"
+        is_custom_voice = "CustomVoice" in get_current_model_id()
         speaker = "default"
         if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
             speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
@@ -168,7 +168,7 @@ def generate_audio(
 ):
     model = get_model(model_id)
     cached_prompt = _cached_voice_clone_prompt
-    is_custom_voice = getattr(model.model.config, "tts_model_type", None) == "custom_voice"
+    is_custom_voice = "CustomVoice" in get_current_model_id()
     speaker = "default"
     if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
         speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]

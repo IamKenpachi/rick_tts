@@ -88,26 +88,66 @@ def warmup_model(model_id: str = None):
     global _cached_voice_clone_prompt
     try:
         model = get_model(model_id)
-        print("TTS warm-up: model loaded. Running silent inference pass...")
-        audio_list, sr = model.generate_voice_clone(
-            text="Ready.",
-            language=LANGUAGE,
-            ref_audio=REFERENCE_AUDIO,
-            ref_text=REFERENCE_TEXT,
-            instruct=INSTRUCT,
-            temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
-            top_p=float(os.getenv("TTS_TOP_P", 0.9)),
-            top_k=int(os.getenv("TTS_TOP_K", 40)),
-            repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
-        )
-        # Cache the prompt
-        cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT)
-        if hasattr(model, "_voice_prompt_cache") and cache_key in model._voice_prompt_cache:
-            _cached_voice_clone_prompt = model._voice_prompt_cache[cache_key]
-            print(f"Voice clone prompt cached successfully.")
+        print("TTS warm-up: model loaded.")
+        
+        is_custom_voice = getattr(model.model.config, "tts_model_type", None) == "custom_voice"
+        speaker = "default"
+        if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
+            speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
+        
+        if not getattr(model, "_warmed_up", False):
+            print("Running silent inference pass to capture CUDA graphs...")
+            if is_custom_voice:
+                model.generate_custom_voice(
+                    text="Ready.",
+                    speaker=speaker,
+                    language=LANGUAGE,
+                    instruct=INSTRUCT,
+                    temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
+                    top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+                    top_k=int(os.getenv("TTS_TOP_K", 40)),
+                    repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
+                )
+            else:
+                model.generate_voice_clone(
+                    text="Ready.",
+                    language=LANGUAGE,
+                    ref_audio=REFERENCE_AUDIO,
+                    ref_text=REFERENCE_TEXT,
+                    instruct=INSTRUCT,
+                    temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
+                    top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+                    top_k=int(os.getenv("TTS_TOP_K", 40)),
+                    repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
+                )
         else:
-            print("Warning: voice clone prompt cache not found; will re-encode on each request.")
+            if not is_custom_voice:
+                print("CUDA graphs already captured. Pre-encoding reference audio for cache...")
+                dummy_input_ids = [model.model._tokenize_texts(
+                    [model.model._build_assistant_text("OK.")]
+                )[0]]
+                model._resolve_voice_clone_prompt_from_reference(
+                    input_ids=dummy_input_ids,
+                    ref_audio=REFERENCE_AUDIO,
+                    ref_text=REFERENCE_TEXT.strip(),
+                    xvec_only=False,
+                    append_silence=True,
+                )
+
+        if not is_custom_voice:
+            # Retrieve the cached prompt using the CORRECT 4-field key the library uses.
+            cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT.strip(), False, True)
+            if hasattr(model, "_voice_prompt_cache") and cache_key in model._voice_prompt_cache:
+                vcp, ref_ids = model._voice_prompt_cache[cache_key]
+                _cached_voice_clone_prompt = vcp
+                print("Voice clone prompt cached successfully.")
+            else:
+                print("Warning: voice clone prompt cache not found; will re-encode on each request.")
+                _cached_voice_clone_prompt = None
+        else:
             _cached_voice_clone_prompt = None
+            print("CustomVoice model initialized successfully.")
+
         print("TTS warm-up complete. Model is ready.")
         return True
     except Exception as e:
@@ -128,6 +168,10 @@ def generate_audio(
 ):
     model = get_model(model_id)
     cached_prompt = _cached_voice_clone_prompt
+    is_custom_voice = getattr(model.model.config, "tts_model_type", None) == "custom_voice"
+    speaker = "default"
+    if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
+        speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
 
     if use_streaming:
         audio_chunks = []
@@ -141,14 +185,19 @@ def generate_audio(
             top_k=top_k,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
-            ref_text=REFERENCE_TEXT,  # Always required by internal Mimi tokenizer
         )
-        if cached_prompt is not None:
-            gen_kwargs["voice_clone_prompt"] = cached_prompt
+        if is_custom_voice:
+            gen_kwargs["speaker"] = speaker
+            for audio_chunk, sr, timing in model.generate_custom_voice_streaming(**gen_kwargs):
+                audio_chunks.append(audio_chunk)
         else:
-            gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-        for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
-            audio_chunks.append(audio_chunk)
+            gen_kwargs["ref_text"] = REFERENCE_TEXT
+            if cached_prompt is not None:
+                gen_kwargs["voice_clone_prompt"] = cached_prompt
+            else:
+                gen_kwargs["ref_audio"] = REFERENCE_AUDIO
+            for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
+                audio_chunks.append(audio_chunk)
         if not audio_chunks:
             return None
         final_audio = np.concatenate(audio_chunks)
@@ -161,13 +210,18 @@ def generate_audio(
             top_p=top_p,
             top_k=top_k,
             repetition_penalty=repetition_penalty,
-            ref_text=REFERENCE_TEXT,  # Always required by internal Mimi tokenizer
         )
-        if cached_prompt is not None:
-            gen_kwargs["voice_clone_prompt"] = cached_prompt
+        if is_custom_voice:
+            gen_kwargs["speaker"] = speaker
+            audio_list, sr = model.generate_custom_voice(**gen_kwargs)
         else:
-            gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-        audio_list, sr = model.generate_voice_clone(**gen_kwargs)
+            gen_kwargs["ref_text"] = REFERENCE_TEXT
+            if cached_prompt is not None:
+                gen_kwargs["voice_clone_prompt"] = cached_prompt
+            else:
+                gen_kwargs["ref_audio"] = REFERENCE_AUDIO
+            audio_list, sr = model.generate_voice_clone(**gen_kwargs)
+        
         if not audio_list:
             return None
         final_audio = np.concatenate(audio_list)

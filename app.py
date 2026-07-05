@@ -91,12 +91,18 @@ def _warmup_tts_background():
     global TTS_READY
     if TTS_AVAILABLE:
         print("Starting TTS model warm-up in background thread...")
-        success = warmup_model()
-        TTS_READY = success
-        if success:
-            print("TTS model is ready. First user request will not wait for model loading.")
-        else:
-            print("TTS warm-up failed. First request will attempt to load the model.")
+        try:
+            success = warmup_model()
+            TTS_READY = success
+            if success:
+                print("TTS model is ready. First user request will not wait for model loading.")
+            else:
+                print("TTS warm-up failed. First request will attempt to load the model.")
+        except Exception as e:
+            import traceback
+            print(f"TTS warm-up background task crashed: {e}")
+            traceback.print_exc()
+            TTS_READY = False
     else:
         print("TTS not available. Skipping warm-up.")
 

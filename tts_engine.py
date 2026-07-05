@@ -27,7 +27,7 @@ Then the bell rings, they give you a carton of milk and a piece of paper that sa
 """
 
 def get_model(model_id: str = None):
-    global _model, _current_model_id
+    global _model, _current_model_id, _cached_voice_clone_prompt
     import torch
 
     if model_id is None:
@@ -38,6 +38,7 @@ def get_model(model_id: str = None):
         del _model
         _model = None
         _current_model_id = None
+        _cached_voice_clone_prompt = None
         torch.cuda.empty_cache()
         print("Old model unloaded. GPU memory freed.")
 
@@ -91,7 +92,15 @@ def warmup_model(model_id: str = None):
     global _cached_voice_clone_prompt
     try:
         model = get_model(model_id)
-        print("TTS warm-up: model loaded. Running silent inference pass...")
+        print("TTS warm-up: model loaded.")
+        
+        if getattr(model, "_warmed_up", False):
+            print("CUDA graphs already captured. Skipping silent inference pass.")
+            _cached_voice_clone_prompt = None
+            print("TTS warm-up complete. Model is ready.")
+            return True
+
+        print("Running silent inference pass to capture CUDA graphs...")
         audio_list, sr = model.generate_voice_clone(
             text="Ready.",
             language=LANGUAGE,
@@ -114,7 +123,9 @@ def warmup_model(model_id: str = None):
         print("TTS warm-up complete. Model is ready.")
         return True
     except Exception as e:
+        import traceback
         print(f"TTS warm-up failed: {e}")
+        traceback.print_exc()
         return False
 
 def generate_audio(

@@ -57,6 +57,9 @@ document.addEventListener('DOMContentLoaded', () => {
         modelSelect.disabled = true;
         const indicator = document.getElementById("tts-status-indicator");
         const statusText = document.getElementById("tts-status-text");
+        const overlay = document.getElementById("loading-overlay");
+        
+        overlay.style.display = "flex"; // Block UI during switch
         indicator.className = "status-chip status-warming";
         statusText.textContent = "TTS: Switching to " + selectedSize + "...";
         try {
@@ -69,15 +72,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 const err = await res.json();
                 alert("Failed to switch model: " + err.error);
                 modelSelect.disabled = false;
+                overlay.style.display = "none";
                 return;
             }
+            // Model switch is synchronous now, so if it's OK, it's ready!
             setTimeout(() => {
                 modelSelect.disabled = false;
+                overlay.style.display = "none";
                 checkTtsStatus();
-            }, 2000);
+            }, 500);
         } catch (e) {
             alert("Network error: " + e.message);
             modelSelect.disabled = false;
+            overlay.style.display = "none";
         }
     });
 
@@ -176,6 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const textDiv = contentDiv.querySelector('.text');
             
             let audioId = null;
+            let audioInstruction = null;
             
             while (true) {
                 const { done, value } = await reader.read();
@@ -198,6 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
                             if (data.done) {
                                 audioId = data.audio_id;
+                                audioInstruction = data.instruction || "";
                             }
                         } catch (e) {
                             console.error('SSE JSON Error:', e, line);
@@ -208,9 +217,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (audioId) {
                 const btnHtml = `
-                <button class="play-btn" id="play-${audioId}" disabled>
-                    <i class="fas fa-spinner fa-spin"></i> Generating Voice...
-                </button>`;
+                <div class="audio-controls-wrapper" style="display: flex; gap: 8px; margin-top: 8px;">
+                    <button class="play-btn" id="play-${audioId}" disabled>
+                        <i class="fas fa-spinner fa-spin"></i> Generating Voice...
+                    </button>
+                    <button class="play-btn" id="regen-${audioId}" style="display:none; padding: 6px 12px;" onclick="regenerateAudio('${audioId}', this, '${escapeHTML(audioInstruction).replace(/'/g, "\\'")}')" title="Regenerate Audio">
+                        <i class="fas fa-redo"></i>
+                    </button>
+                </div>`;
                 contentDiv.insertAdjacentHTML('beforeend', btnHtml);
                 pollAudioStatus(audioId, 2000, 0);
             }
@@ -248,6 +262,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 btn.disabled = false;
                 btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
                 btn._audio = null;
+                const regenBtn = document.getElementById("regen-" + audioId);
+                if (regenBtn) regenBtn.style.display = "inline-block";
                 btn.onclick = () => {
                     if (btn._audio) {
                         btn._audio.pause();
@@ -389,6 +405,35 @@ document.addEventListener('DOMContentLoaded', () => {
             sidebar.classList.toggle('open');
         });
     }
+
+    window.regenerateAudio = async function(audioId, btnElement, instruction) {
+        const wrapper = btnElement.closest('.message-content');
+        const textElement = wrapper.querySelector('.text');
+        const text = textElement.innerText || textElement.textContent;
+        const playBtn = document.getElementById("play-" + audioId);
+        
+        playBtn.disabled = true;
+        playBtn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> Regenerating...";
+        btnElement.style.display = "none";
+        
+        if (playBtn._audio) {
+            playBtn._audio.pause();
+            playBtn._audio = null;
+        }
+
+        try {
+            const res = await fetch("/regenerate_audio", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ audio_id: audioId, text: text, instruction: instruction })
+            });
+            if (!res.ok) throw new Error("Failed to regenerate");
+            pollAudioStatus(audioId, 2000, 0);
+        } catch (e) {
+            playBtn.innerHTML = "<i class='fas fa-exclamation-triangle'></i> Error";
+            console.error(e);
+        }
+    };
 
     loadSessions();
     loadSessionHistory();

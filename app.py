@@ -18,8 +18,7 @@ except ImportError as e:
     TTS_AVAILABLE = False
 
 TTS_READY = False  # becomes True when warmup_model() finishes successfully
-_tts_semaphore = threading.Semaphore(1)  # Only 1 TTS job at a time (model is not thread-safe)
-_model_switch_lock = threading.Lock()
+tts_lock = threading.Lock()  # Unified lock for TTS loading and generation
 
 # Load environment variables
 load_dotenv()
@@ -87,11 +86,12 @@ RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", 5.0))  # min seconds 
 
 
 def _warmup_tts_background():
-    """Warms up the TTS model in a background thread on server start."""
+    """Warms up the TTS model synchronously on startup (in a background thread to not block flask)."""
     global TTS_READY
     if TTS_AVAILABLE:
         print("Starting TTS model warm-up in background thread...")
-        success = warmup_model()
+        with tts_lock:
+            success = warmup_model()
         TTS_READY = success
         if success:
             print("TTS model is ready. First user request will not wait for model loading.")
@@ -100,8 +100,8 @@ def _warmup_tts_background():
     else:
         print("TTS not available. Skipping warm-up.")
 
-_warmup_thread = threading.Thread(target=_warmup_tts_background, daemon=True)
-_warmup_thread.start()
+_startup_thread = threading.Thread(target=_warmup_tts_background, daemon=True)
+_startup_thread.start()
 
 # System prompt for Gemini
 # OLD_RICK_SYSTEM_PROMPT = """**CORE PERSONA:** 
@@ -440,7 +440,7 @@ def generate_tts_background(text: str, audio_id: str, tts_instruction: str = Non
     output_path = AUDIO_CACHE_DIR / f"{audio_id}.wav"
     print(f"Background TTS task started for {audio_id}...")
     
-    with _tts_semaphore:  # CRITICAL: Only one TTS job may run at a time
+    with tts_lock:  # CRITICAL: Only one TTS job may run at a time
         try:
             generate_audio(
                 text=text,
@@ -541,8 +541,8 @@ def chat():
             )
             thread.start()
 
-            # Signal stream end with audio_id and mood
-            yield f"data: {json.dumps({'done': True, 'audio_id': audio_id, 'mood': mood, 'session_id': session_id})}\n\n"
+            # Signal stream end with audio_id, mood, and instruction
+            yield f"data: {json.dumps({'done': True, 'audio_id': audio_id, 'mood': mood, 'session_id': session_id, 'instruction': tts_instruction})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -587,6 +587,31 @@ def delete_session(session_id):
         history_file.unlink()
     return jsonify({"deleted": session_id})
 
+@app.route("/regenerate_audio", methods=["POST"])
+def regenerate_audio():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+    text = data.get("text")
+    audio_id = data.get("audio_id")
+    instruction = data.get("instruction")
+    
+    if not text or not audio_id:
+        return jsonify({"error": "Missing text or audio_id"}), 400
+        
+    old_file = AUDIO_CACHE_DIR / f"{audio_id}.wav"
+    old_error = AUDIO_CACHE_DIR / f"{audio_id}.error"
+    if old_file.exists():
+        old_file.unlink()
+    if old_error.exists():
+        old_error.unlink()
+        
+    thread = threading.Thread(
+        target=generate_tts_background, args=(text, audio_id, instruction), daemon=True
+    )
+    thread.start()
+    return jsonify({"status": "started", "audio_id": audio_id})
+
 @app.route("/audio_status/<audio_id>", methods=["GET"])
 def audio_status(audio_id):
     if not UUID_PATTERN.match(audio_id):
@@ -612,15 +637,16 @@ def switch_model():
     if model_size not in SUPPORTED_MODELS:
         return jsonify({"error": f"Invalid model_size. Must be one of: {list(SUPPORTED_MODELS.keys())}"}), 400
     model_id = SUPPORTED_MODELS[model_size]
-    TTS_READY = False
-    def _reload_model_background():
-        global TTS_READY
-        print(f"Switching TTS model to: {model_id}...")
+    print(f"Switching TTS model to: {model_id}...")
+    with tts_lock:
+        TTS_READY = False
         success = warmup_model(model_id=model_id)
         TTS_READY = success
-    reload_thread = threading.Thread(target=_reload_model_background, daemon=True)
-    reload_thread.start()
-    return jsonify({"status": "switching", "model_id": model_id})
+        
+    if not success:
+        return jsonify({"error": "Model failed to load"}), 500
+        
+    return jsonify({"status": "switched", "model_id": model_id})
 
 @app.route("/current_model", methods=["GET"])
 def current_model():

@@ -4,6 +4,28 @@ import os
 from pathlib import Path
 from faster_qwen3_tts import FasterQwen3TTS
 
+# --- MONKEY PATCH FOR 0.6B MODEL ---
+try:
+    from qwen_tts import Qwen3TTSModel
+    orig_from_pretrained = Qwen3TTSModel.from_pretrained
+    
+    @classmethod
+    def custom_from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        device = kwargs.pop("device_map", None)
+        kwargs["low_cpu_mem_usage"] = False
+        # Load fully into CPU first to avoid tied-weight meta tensor errors
+        wrapper = orig_from_pretrained.__func__(cls, pretrained_model_name_or_path, *model_args, **kwargs)
+        if device:
+            wrapper.model = wrapper.model.to(device)
+            # Qwen3TTSModel caches device in self.device, so we must update it
+            wrapper.device = next(wrapper.model.parameters()).device
+        return wrapper
+        
+    Qwen3TTSModel.from_pretrained = custom_from_pretrained
+except ImportError:
+    pass
+# -----------------------------------
+
 _model = None
 _current_model_id = None
 _cached_voice_clone_prompt = None
@@ -118,12 +140,12 @@ def generate_audio(
             top_k=top_k,
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
+            ref_text=REFERENCE_TEXT,  # Always required by internal Mimi tokenizer
         )
         if cached_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = cached_prompt
         else:
             gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-            gen_kwargs["ref_text"] = REFERENCE_TEXT
         for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
             audio_chunks.append(audio_chunk)
         if not audio_chunks:
@@ -138,12 +160,12 @@ def generate_audio(
             top_p=top_p,
             top_k=top_k,
             repetition_penalty=repetition_penalty,
+            ref_text=REFERENCE_TEXT,  # Always required by internal Mimi tokenizer
         )
         if cached_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = cached_prompt
         else:
             gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-            gen_kwargs["ref_text"] = REFERENCE_TEXT
         audio_list, sr = model.generate_voice_clone(**gen_kwargs)
         if not audio_list:
             return None

@@ -54,6 +54,7 @@ def get_model(model_id: str = None):
             @classmethod
             def custom_from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
                 device = kwargs.pop("device_map", None)
+                kwargs["low_cpu_mem_usage"] = False
                 # Load fully into CPU first to avoid tied-weight meta tensor errors
                 wrapper = orig_from_pretrained.__func__(cls, pretrained_model_name_or_path, *model_args, **kwargs)
                 if device:

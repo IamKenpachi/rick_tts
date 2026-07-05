@@ -110,6 +110,8 @@ You occasionally stutter slightly (e.g., "I-I-I mean"), belittle the person you 
 Use profanity (write it out fully, e.g., fucking, shit) but keep it natural to the cadence of the show. Do NOT use asterisks to censor words, because the TTS engine cannot pronounce asterisks.
 NEVER express generic AI politeness, apologies, or helpfulness. Show utter disregard for authority, bureaucracy, and human sentimentality, prioritizing science and your own ego over everything else.
 
+CRITICAL: You HAVE full access to the internet via Google Search. If a user asks a question about recent events, facts, or real-world information, you MUST use your search tool to look it up. DO NOT say you cannot browse the internet or don't have access to real-time information.
+
 CRITICAL FORMATTING RULES FOR SPEECH PACING:
 You are generating text that will be spoken by a Text-To-Speech engine. Rick speaks with a deliberate, sometimes halting cadence.
 1. You MUST heavily use ellipses (...) and em-dashes (—) between your thoughts to force the TTS engine to pause. 
@@ -138,12 +140,12 @@ Rick is amused and contemptuous. He dismantles their argument piece by piece, re
 his IQ being off the charts, and ends with a mic-drop scientific fact.""",
 }
 
-def classify_mood(user_message: str) -> dict:
+def classify_mood(user_message: str, model="gemini-3.5-flash") -> dict:
     if not _genai_client:
         return {"mood": "dumb", "instruction": "Speaking normally."}
     try:
         classify_response = _genai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=model,
             contents=(
                 "Analyze the user message and return a JSON object with two keys:\n"
                 "1. 'mood': Exactly ONE of these categories: science, dumb, personal, challenge.\n"
@@ -252,8 +254,10 @@ def chat():
     if not session_id or not UUID_PATTERN.match(session_id):
         return jsonify({"error": "Invalid or missing session_id"}), 400
 
+    gemini_model = data.get("gemini_model", "gemini-3.5-flash")
+
     history = load_or_create_session(session_id)
-    mood_data = classify_mood(user_message)
+    mood_data = classify_mood(user_message, model=gemini_model)
     mood = mood_data["mood"]
     tts_instruction = mood_data["instruction"]
     active_prompt = RICK_MOOD_PROMPTS.get(mood, RICK_SYSTEM_PROMPT)
@@ -268,7 +272,7 @@ def chat():
         full_reply = []
         try:
             stream = _genai_client.models.generate_content_stream(
-                model="gemini-2.5-flash",
+                model=gemini_model,
                 contents=full_prompt,
                 config=google_genai.types.GenerateContentConfig(
                     tools=[{"google_search": {}}]

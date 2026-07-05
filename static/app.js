@@ -149,13 +149,15 @@ document.addEventListener('DOMContentLoaded', () => {
         appendUserMessage(text);
         const loadingDiv = appendAIMessageLoading();
 
+        const geminiModel = document.getElementById("gemini-model-select").value;
+
         try {
             const response = await fetch('/chat', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ message: text, session_id: currentSessionId })
+                body: JSON.stringify({ message: text, session_id: currentSessionId, gemini_model: geminiModel })
             });
 
             if (!response.ok) {

@@ -154,7 +154,10 @@ def chat():
         
         response = _genai_client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=f"{RICK_SYSTEM_PROMPT}\n\nUser: {user_message}\nRick:"
+            contents=f"{RICK_SYSTEM_PROMPT}\n\nUser: {user_message}\nRick:",
+            config=google_genai.types.GenerateContentConfig(
+                tools=[{"google_search": {}}]
+            )
         )
         reply_text = response.text
     except Exception as e:

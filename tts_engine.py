@@ -167,11 +167,11 @@ def generate_audio(
             repetition_penalty=repetition_penalty,
             chunk_size=chunk_size,
         )
+        gen_kwargs["ref_text"] = REFERENCE_TEXT
         if cached_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = cached_prompt
         else:
             gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-            gen_kwargs["ref_text"] = REFERENCE_TEXT
         for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
             audio_chunks.append(audio_chunk)
         if not audio_chunks:
@@ -187,11 +187,11 @@ def generate_audio(
             top_k=top_k,
             repetition_penalty=repetition_penalty,
         )
+        gen_kwargs["ref_text"] = REFERENCE_TEXT
         if cached_prompt is not None:
             gen_kwargs["voice_clone_prompt"] = cached_prompt
         else:
             gen_kwargs["ref_audio"] = REFERENCE_AUDIO
-            gen_kwargs["ref_text"] = REFERENCE_TEXT
         audio_list, sr = model.generate_voice_clone(**gen_kwargs)
         if not audio_list:
             return None

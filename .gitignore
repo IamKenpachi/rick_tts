@@ -1,0 +1,4 @@
+venv/
+.env
+audio_cache/
+__pycache__/

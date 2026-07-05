@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rick Sanchez TTS Chat</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <h2>Rick TTS</h2>
+            </div>
+            <div class="sidebar-content">
+                <button class="new-chat-btn"><i class="fas fa-plus"></i> New Chat</button>
+                <!-- Chat history would go here -->
+            </div>
+            <div class="sidebar-footer">
+                <div class="user-profile">
+                    <i class="fas fa-user-circle"></i>
+                    <span>Morty (You)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="main-content">
+            <div class="chat-container" id="chat-container">
+                <!-- Welcome Message -->
+                <div class="message ai-message">
+                    <div class="avatar"><i class="fas fa-flask"></i></div>
+                    <div class="message-content">
+                        <div class="text">Oh, great. You figured out how to open a webpage. What do you want, Morty? Make it quick, I have science to do.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea id="message-input" placeholder="Message Rick..." rows="1"></textarea>
+                    <button id="send-btn"><i class="fas fa-paper-plane"></i></button>
+                </div>
+                <div class="disclaimer">Rick Sanchez AI can make mistakes. Consider verifying important information. Or don't, whatever.</div>
+            </div>
+        </div>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

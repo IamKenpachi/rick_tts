@@ -17,9 +17,8 @@
                 <h1>⚗️ Rick.AI</h1>
             </div>
             <div class="sidebar-content">
-                <button class="new-chat-btn"><i class="fas fa-plus"></i> New Chat</button>
-                <!-- Chat history would go here -->
-            </div>
+                <button class="new-chat-btn" id="new-chat-btn" onclick="startNewSession()"><i class="fas fa-plus"></i> New Chat</button>
+                <div id="session-list" class="session-list"></div>
             <div class="sidebar-footer">
                 <div class="user-profile">
                     👤 <span>Morty (You)</span>
@@ -29,6 +28,9 @@
 
         <!-- Main Chat Area -->
         <div class="main-content">
+            <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle chat history">
+                <i class="fas fa-bars"></i>
+            </button>
             <!-- Status Bar -->
             <div class="status-bar">
                 <div id="tts-status-indicator" class="status-chip status-warming">

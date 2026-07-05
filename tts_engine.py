@@ -1,10 +1,13 @@
 import numpy as np
 import soundfile as sf
+import os
+import librosa
 from pathlib import Path
 from faster_qwen3_tts import FasterQwen3TTS
 
 _model = None
 _current_model_id = None
+_cached_voice_clone_prompt = None
 SUPPORTED_MODELS = {
     "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -56,19 +59,33 @@ def get_model(model_id: str = None):
 def get_current_model_id() -> str:
     return _current_model_id or SUPPORTED_MODELS[DEFAULT_MODEL_SIZE]
 
+def get_cached_voice_clone_prompt():
+    return _cached_voice_clone_prompt
+
 def warmup_model(model_id: str = None):
+    global _cached_voice_clone_prompt
     try:
         model = get_model(model_id)
         print("TTS warm-up: model loaded. Running silent inference pass...")
-        _audio_list, _sr = model.generate_voice_clone(
+        audio_list, sr = model.generate_voice_clone(
             text="Ready.",
             language=LANGUAGE,
             ref_audio=REFERENCE_AUDIO,
             ref_text=REFERENCE_TEXT,
             instruct=INSTRUCT,
-            temperature=0.85,
-            top_p=0.9,
+            temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
+            top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+            top_k=int(os.getenv("TTS_TOP_K", 40)),
+            repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
         )
+        # Cache the prompt
+        cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT)
+        if hasattr(model, "_voice_prompt_cache") and cache_key in model._voice_prompt_cache:
+            _cached_voice_clone_prompt = model._voice_prompt_cache[cache_key]
+            print(f"Voice clone prompt cached successfully.")
+        else:
+            print("Warning: voice clone prompt cache not found; will re-encode on each request.")
+            _cached_voice_clone_prompt = None
         print("TTS warm-up complete. Model is ready.")
         return True
     except Exception as e:
@@ -81,42 +98,64 @@ def generate_audio(
     chunk_size: int = 8,
     temperature: float = 0.85,
     top_p: float = 0.9,
+    top_k: int = 40,
+    repetition_penalty: float = 1.05,
     use_streaming: bool = False,
     model_id: str = None,
 ):
     model = get_model(model_id)
+    cached_prompt = _cached_voice_clone_prompt
 
     if use_streaming:
         audio_chunks = []
         sr = 24000
-        for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
+        gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            ref_audio=REFERENCE_AUDIO,
-            ref_text=REFERENCE_TEXT,
             instruct=INSTRUCT,
-            chunk_size=chunk_size,
             temperature=temperature,
             top_p=top_p,
-        ):
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            chunk_size=chunk_size,
+        )
+        if cached_prompt is not None:
+            gen_kwargs["voice_clone_prompt"] = cached_prompt
+        else:
+            gen_kwargs["ref_audio"] = REFERENCE_AUDIO
+            gen_kwargs["ref_text"] = REFERENCE_TEXT
+        for audio_chunk, sr, timing in model.generate_voice_clone_streaming(**gen_kwargs):
             audio_chunks.append(audio_chunk)
         if not audio_chunks:
             return None
         final_audio = np.concatenate(audio_chunks)
     else:
-        audio_list, sr = model.generate_voice_clone(
+        gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            ref_audio=REFERENCE_AUDIO,
-            ref_text=REFERENCE_TEXT,
             instruct=INSTRUCT,
             temperature=temperature,
             top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
         )
+        if cached_prompt is not None:
+            gen_kwargs["voice_clone_prompt"] = cached_prompt
+        else:
+            gen_kwargs["ref_audio"] = REFERENCE_AUDIO
+            gen_kwargs["ref_text"] = REFERENCE_TEXT
+        audio_list, sr = model.generate_voice_clone(**gen_kwargs)
         if not audio_list:
             return None
         final_audio = np.concatenate(audio_list)
 
+    # Apply speed factor BEFORE writing
+    speed_factor = float(os.getenv("TTS_SPEED_FACTOR", 1.0))
+    if speed_factor != 1.0:
+        stretch_rate = 1.0 / speed_factor
+        final_audio = librosa.effects.time_stretch(final_audio.astype(np.float32), rate=stretch_rate)
+
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     sf.write(output_path, final_audio, sr)
     return output_path
+

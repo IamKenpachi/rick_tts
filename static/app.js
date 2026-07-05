@@ -1,4 +1,17 @@
 document.addEventListener('DOMContentLoaded', () => {
+    function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    }
+
+    let currentSessionId = localStorage.getItem('rick_session_id');
+    if (!currentSessionId) {
+        currentSessionId = generateUUID();
+        localStorage.setItem('rick_session_id', currentSessionId);
+    }
+
     // UI-02: Poll TTS status until warm-up is complete
     async function checkTtsStatus() {
         try {
@@ -142,26 +155,65 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ message: text })
+                body: JSON.stringify({ message: text, session_id: currentSessionId })
             });
 
-            const data = await response.json();
-            
             if (!response.ok) {
+                const data = await response.json();
                 throw new Error(data.error || 'Server error');
             }
 
-            // Replace loading with actual response
-            loadingDiv.removeAttribute('id');
-            loadingDiv.querySelector('.message-content').innerHTML = `
-                <div class="text">${escapeHTML(data.reply).replace(/\n/g, '<br>')}</div>
-                <button class="play-btn" id="play-${data.audio_id}" disabled>
-                    <i class="fas fa-spinner fa-spin"></i> Generating Voice...
-                </button>
-            `;
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
             
-            // Start polling for audio (NEW-08: starts at 2000ms)
-            pollAudioStatus(data.audio_id, 2000, 0);
+            // Replace loading state with empty text
+            loadingDiv.removeAttribute('id');
+            const contentDiv = loadingDiv.querySelector('.message-content');
+            contentDiv.innerHTML = `<div class="text"></div>`;
+            const textDiv = contentDiv.querySelector('.text');
+            
+            let audioId = null;
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop(); // Keep incomplete lines in buffer
+                
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.error) {
+                                throw new Error(data.error);
+                            }
+                            if (data.token) {
+                                textDiv.innerHTML += escapeHTML(data.token).replace(/\n/g, '<br>');
+                                scrollToBottom();
+                            }
+                            if (data.done) {
+                                audioId = data.audio_id;
+                            }
+                        } catch (e) {
+                            console.error('SSE JSON Error:', e, line);
+                        }
+                    }
+                }
+            }
+
+            if (audioId) {
+                const btnHtml = `
+                <button class="play-btn" id="play-${audioId}" disabled>
+                    <i class="fas fa-spinner fa-spin"></i> Generating Voice...
+                </button>`;
+                contentDiv.insertAdjacentHTML('beforeend', btnHtml);
+                pollAudioStatus(audioId, 2000, 0);
+            }
+
+            loadSessions(); // refresh history
 
         } catch (error) {
             loadingDiv.removeAttribute('id');
@@ -258,4 +310,84 @@ document.addEventListener('DOMContentLoaded', () => {
             }[tag] || tag)
         );
     }
+
+    async function loadSessions() {
+        try {
+            const res = await fetch('/sessions');
+            const sessions = await res.json();
+            const list = document.getElementById('session-list');
+            if (!list) return;
+            list.innerHTML = '';
+            sessions.forEach(s => {
+                const div = document.createElement('div');
+                div.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+                div.textContent = `Session ${s.id.slice(0,8)}`;
+                div.onclick = () => {
+                    currentSessionId = s.id;
+                    localStorage.setItem('rick_session_id', currentSessionId);
+                    loadSessions();
+                    loadSessionHistory();
+                    if (window.innerWidth <= 768) {
+                        document.querySelector('.sidebar').classList.remove('open');
+                    }
+                };
+                list.appendChild(div);
+            });
+        } catch(e) { console.warn(e); }
+    }
+
+    async function loadSessionHistory() {
+        chatContainer.innerHTML = '';
+        try {
+            const res = await fetch('/session/' + currentSessionId);
+            const history = await res.json();
+            if (history.length === 0) {
+                chatContainer.innerHTML = `
+                <div class="message ai-message">
+                    <div class="avatar ai-avatar">⚗️</div>
+                    <div class="message-content">
+                        <div class="text">Ugh, great. Another one who figured out how to open a browser. What do you want, Morty? Spit it out — I've got a neutrino bomb that needs calibrating and exactly zero time for your nonsense.</div>
+                    </div>
+                </div>`;
+            } else {
+                history.forEach(msg => {
+                    if (msg.role === 'user') {
+                        appendUserMessage(msg.content);
+                    } else {
+                        const msgDiv = document.createElement('div');
+                        msgDiv.className = 'message ai-message';
+                        msgDiv.innerHTML = `
+                            <div class="avatar ai-avatar">⚗️</div>
+                            <div class="message-content">
+                                <div class="text">${escapeHTML(msg.content).replace(/\n/g, '<br>')}</div>
+                            </div>
+                        `;
+                        chatContainer.appendChild(msgDiv);
+                    }
+                });
+            }
+            scrollToBottom();
+        } catch(e) { console.warn(e); }
+    }
+
+    window.startNewSession = () => {
+        currentSessionId = generateUUID();
+        localStorage.setItem('rick_session_id', currentSessionId);
+        loadSessions();
+        loadSessionHistory();
+        if (window.innerWidth <= 768) {
+            document.querySelector('.sidebar').classList.remove('open');
+        }
+    };
+
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebarToggle && sidebar) {
+        sidebarToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+        });
+    }
+
+    loadSessions();
+    loadSessionHistory();
 });

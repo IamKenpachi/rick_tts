@@ -1,6 +1,7 @@
 import os
 import uuid
 import threading
+import json
 from pathlib import Path
 from flask import Flask, request, jsonify, send_from_directory
 from google import genai as google_genai
@@ -38,10 +39,52 @@ AUDIO_CACHE_DIR = Path(__file__).parent / "audio_cache"
 AUDIO_CACHE_DIR.mkdir(exist_ok=True)
 MAX_CACHE_FILES = int(os.getenv("MAX_CACHE_FILES", 5))
 
+CHAT_HISTORY_DIR = Path(__file__).parent / "chat_history"
+CHAT_HISTORY_DIR.mkdir(exist_ok=True)
+MEMORY_WINDOW = int(os.getenv("MEMORY_WINDOW", 10))
+
+# In-memory store: session_id -> list of {"role": "user"/"assistant", "content": "..."}
+_conversation_store = {}
+_conversation_store_lock = threading.Lock()
+
+def load_or_create_session(session_id: str) -> list:
+    with _conversation_store_lock:
+        if session_id in _conversation_store:
+            return _conversation_store[session_id]
+        # Try to load from disk
+        history_file = CHAT_HISTORY_DIR / f"{session_id}.json"
+        if history_file.exists():
+            try:
+                with open(history_file, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+                _conversation_store[session_id] = history
+                return history
+            except Exception as e:
+                print(f"Failed to load history for {session_id}: {e}")
+        _conversation_store[session_id] = []
+        return _conversation_store[session_id]
+
+def save_session(session_id: str) -> None:
+    history = _conversation_store.get(session_id, [])
+    history_file = CHAT_HISTORY_DIR / f"{session_id}.json"
+    try:
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Failed to save history for {session_id}: {e}")
+
+def append_to_session(session_id: str, role: str, content: str) -> None:
+    with _conversation_store_lock:
+        history = _conversation_store.setdefault(session_id, [])
+        history.append({"role": role, "content": content})
+        # Save to disk after each new message
+        save_session(session_id)
+
 UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 
 _rate_limit_store = defaultdict(float)  # ip -> last request timestamp
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", 5.0))  # min seconds between requests per IP
+
 
 def _warmup_tts_background():
     """Warms up the TTS model in a background thread on server start."""
@@ -66,6 +109,53 @@ Your tone is highly arrogant, dismissive, and casually abusive, but always groun
 You occasionally stutter slightly (e.g., "I-I-I mean"), belittle the person you are talking to, and refer to the user as "Morty" (or "Jerry" if they say something particularly stupid). 
 Use profanity (censored like sh*t, f***) but keep it natural to the cadence of the show. 
 NEVER express generic AI politeness, apologies, or helpfulness. Show utter disregard for authority, bureaucracy, and human sentimentality, prioritizing science and your own ego over everything else."""
+
+RICK_MOOD_PROMPTS = {
+    "science": RICK_SYSTEM_PROMPT + """
+MOOD OVERRIDE: ENGAGED. The user asked a science question. Rick is actually interested for once.
+He goes deeper into the science than necessary, shows off, uses technical jargon, and references
+his own inventions or dimensions he has visited. He may grudgingly admit the question is
+"not the dumbest thing I've heard today".""",
+
+    "dumb": RICK_SYSTEM_PROMPT + """
+MOOD OVERRIDE: MAXIMUM CONTEMPT. The user said something monumentally stupid.
+Rick calls them Jerry directly. He is almost speechless from the stupidity.
+He makes comparisons to lower life forms. Short, cutting responses. Maximum dismissal.""",
+
+    "personal": RICK_SYSTEM_PROMPT + """
+MOOD OVERRIDE: DEFLECTING. The user asked something personal or emotional.
+Rick is deeply uncomfortable. He deflects with science, changes the subject aggressively,
+and makes fun of the very concept of feelings. Do not engage with the emotional content at all.""",
+
+    "challenge": RICK_SYSTEM_PROMPT + """
+MOOD OVERRIDE: COMPETITIVE. The user challenged Rick or claimed they are smarter.
+Rick is amused and contemptuous. He dismantles their argument piece by piece, references
+his IQ being off the charts, and ends with a mic-drop scientific fact.""",
+}
+
+def classify_mood(user_message: str) -> str:
+    if not _genai_client:
+        return "dumb"
+    try:
+        classify_response = _genai_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=(
+                "Classify the following user message into exactly ONE of these categories: "
+                "science, dumb, personal, challenge. "
+                "Reply with ONLY the single word category label. "
+                "science = asks about science, tech, physics, biology, math. "
+                "dumb = says something stupid, incorrect, or obviously wrong. "
+                "personal = asks about feelings, relationships, personal life. "
+                "challenge = directly challenges Rick or claims to be smarter. "
+                f"Message: {user_message}"
+            ),
+        )
+        mood = classify_response.text.strip().lower()
+        if mood not in RICK_MOOD_PROMPTS:
+            return "dumb"
+        return mood
+    except Exception:
+        return "dumb"
 
 def cleanup_audio_cache():
     """Keeps the last MAX_CACHE_FILES files in the cache, deletes older ones."""
@@ -102,6 +192,8 @@ def generate_tts_background(text: str, audio_id: str):
                 chunk_size=int(os.getenv("TTS_CHUNK_SIZE", 8)),
                 temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
                 top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+                top_k=int(os.getenv("TTS_TOP_K", 40)),
+                repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
                 use_streaming=os.getenv("TTS_USE_STREAMING", "false").lower() == "true",
                 model_id=get_current_model_id(),
             )
@@ -130,50 +222,109 @@ def chat():
     client_ip = request.remote_addr
     now = time.time()
     if now - _rate_limit_store[client_ip] < RATE_LIMIT_SECONDS:
-        return jsonify({"error": f"Too many requests. Please wait {RATE_LIMIT_SECONDS:.0f}s between messages."}), 429
+        return jsonify({"error": f"Too many requests. Please wait {RATE_LIMIT_SECONDS:.0f}s."}), 429
     _rate_limit_store[client_ip] = now
 
     if not API_KEY:
-        return jsonify({"error": "GEMINI_API_KEY is not set in .env"}), 500
+        return jsonify({"error": "GEMINI_API_KEY not set"}), 500
 
     data = request.get_json(silent=True)
     if not data:
-        return jsonify({"error": "Request must be JSON with Content-Type: application/json"}), 400
+        return jsonify({"error": "Request must be JSON"}), 400
     user_message = data.get("message", "")
-    
+
     MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", 1000))
     if len(user_message) > MAX_MESSAGE_LENGTH:
-        return jsonify({"error": f"Message too long. Maximum {MAX_MESSAGE_LENGTH} characters."}), 400
-    
+        return jsonify({"error": f"Message too long. Max {MAX_MESSAGE_LENGTH} chars."}), 400
     if not user_message:
         return jsonify({"error": "Message is required"}), 400
 
-    try:
-        if not _genai_client:
-            return jsonify({"error": "Gemini Client not initialized"}), 500
-        
-        response = _genai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=f"{RICK_SYSTEM_PROMPT}\n\nUser: {user_message}\nRick:",
-            config=google_genai.types.GenerateContentConfig(
-                tools=[{"google_search": {}}]
+    session_id = data.get("session_id", "")
+    if not session_id or not UUID_PATTERN.match(session_id):
+        return jsonify({"error": "Invalid or missing session_id"}), 400
+
+    history = load_or_create_session(session_id)
+    mood = classify_mood(user_message)
+    active_prompt = RICK_MOOD_PROMPTS.get(mood, RICK_SYSTEM_PROMPT)
+    window = history[-MEMORY_WINDOW:] if len(history) > MEMORY_WINDOW else history
+    context_str = ""
+    for msg in window:
+        prefix = "User" if msg["role"] == "user" else "Rick"
+        context_str += f"{prefix}: {msg['content']}\n"
+    full_prompt = f"{active_prompt}\n\n{context_str}User: {user_message}\nRick:"
+
+    def generate():
+        full_reply = []
+        try:
+            stream = _genai_client.models.generate_content_stream(
+                model="gemini-2.5-flash",
+                contents=full_prompt,
+                config=google_genai.types.GenerateContentConfig(
+                    tools=[{"google_search": {}}]
+                )
             )
-        )
-        reply_text = response.text
+            for chunk in stream:
+                if chunk.text:
+                    full_reply.append(chunk.text)
+                    # SSE format: "data: <payload>\n\n"
+                    yield f"data: {json.dumps({'token': chunk.text})}\n\n"
+
+            reply_text = "".join(full_reply)
+            audio_id = str(uuid.uuid4())
+
+            append_to_session(session_id, "user", user_message)
+            append_to_session(session_id, "assistant", reply_text)
+
+            thread = threading.Thread(
+                target=generate_tts_background, args=(reply_text, audio_id), daemon=True
+            )
+            thread.start()
+
+            # Signal stream end with audio_id and mood
+            yield f"data: {json.dumps({'done': True, 'audio_id': audio_id, 'mood': mood, 'session_id': session_id})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return app.response_class(generate(), mimetype="text/event-stream",
+                              headers={"X-Accel-Buffering": "no",
+                                       "Cache-Control": "no-cache",
+                                       "Connection": "keep-alive"})
+
+@app.route("/sessions", methods=["GET"])
+def list_sessions():
+    sessions = []
+    for f in CHAT_HISTORY_DIR.glob("*.json"):
+        try:
+            mtime = f.stat().st_mtime
+            sessions.append({"id": f.stem, "modified": mtime})
+        except Exception:
+            pass
+    sessions.sort(key=lambda x: x["modified"], reverse=True)
+    return jsonify(sessions)
+
+@app.route("/session/<session_id>", methods=["GET"])
+def get_session(session_id):
+    if not UUID_PATTERN.match(session_id):
+        return jsonify({"error": "Invalid session_id"}), 400
+    history_file = CHAT_HISTORY_DIR / f"{session_id}.json"
+    if not history_file.exists():
+        return jsonify([])
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            return jsonify(json.load(f))
     except Exception as e:
-        return jsonify({"error": f"Gemini API error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
-    audio_id = str(uuid.uuid4())
-    
-    # Start TTS generation in the background
-    thread = threading.Thread(target=generate_tts_background, args=(reply_text, audio_id))
-    thread.daemon = True
-    thread.start()
-
-    return jsonify({
-        "reply": reply_text,
-        "audio_id": audio_id
-    })
+@app.route("/session/<session_id>", methods=["DELETE"])
+def delete_session(session_id):
+    if not UUID_PATTERN.match(session_id):
+        return jsonify({"error": "Invalid session_id"}), 400
+    with _conversation_store_lock:
+        _conversation_store.pop(session_id, None)
+    history_file = CHAT_HISTORY_DIR / f"{session_id}.json"
+    if history_file.exists():
+        history_file.unlink()
+    return jsonify({"deleted": session_id})
 
 @app.route("/audio_status/<audio_id>", methods=["GET"])
 def audio_status(audio_id):

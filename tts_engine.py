@@ -1,7 +1,6 @@
 import numpy as np
 import soundfile as sf
 import os
-import librosa
 from pathlib import Path
 from faster_qwen3_tts import FasterQwen3TTS
 
@@ -149,11 +148,10 @@ def generate_audio(
             return None
         final_audio = np.concatenate(audio_list)
 
-    # Apply speed factor BEFORE writing
-    speed_factor = float(os.getenv("TTS_SPEED_FACTOR", 1.0))
-    if speed_factor != 1.0:
-        stretch_rate = 1.0 / speed_factor
-        final_audio = librosa.effects.time_stretch(final_audio.astype(np.float32), rate=stretch_rate)
+    volume_multiplier = float(os.getenv("TTS_VOLUME_MULTIPLIER", 1.5))
+    if volume_multiplier != 1.0:
+        final_audio = final_audio * volume_multiplier
+        final_audio = np.clip(final_audio, -1.0, 1.0)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     sf.write(output_path, final_audio, sr)

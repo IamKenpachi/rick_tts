@@ -94,32 +94,42 @@ def warmup_model(model_id: str = None):
         model = get_model(model_id)
         print("TTS warm-up: model loaded.")
         
-        if getattr(model, "_warmed_up", False):
-            print("CUDA graphs already captured. Skipping silent inference pass.")
-            _cached_voice_clone_prompt = None
-            print("TTS warm-up complete. Model is ready.")
-            return True
+        if not getattr(model, "_warmed_up", False):
+            print("Running silent inference pass to capture CUDA graphs...")
+            model.generate_voice_clone(
+                text="Ready.",
+                language=LANGUAGE,
+                ref_audio=REFERENCE_AUDIO,
+                ref_text=REFERENCE_TEXT,
+                instruct=INSTRUCT,
+                temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
+                top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+                top_k=int(os.getenv("TTS_TOP_K", 40)),
+                repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
+            )
+        else:
+            print("CUDA graphs already captured. Pre-encoding reference audio for cache...")
+            dummy_input_ids = [model.model._tokenize_texts(
+                [model.model._build_assistant_text("OK.")]
+            )[0]]
+            model._resolve_voice_clone_prompt_from_reference(
+                input_ids=dummy_input_ids,
+                ref_audio=REFERENCE_AUDIO,
+                ref_text=REFERENCE_TEXT.strip(),
+                xvec_only=False,
+                append_silence=True,
+            )
 
-        print("Running silent inference pass to capture CUDA graphs...")
-        audio_list, sr = model.generate_voice_clone(
-            text="Ready.",
-            language=LANGUAGE,
-            ref_audio=REFERENCE_AUDIO,
-            ref_text=REFERENCE_TEXT,
-            instruct=INSTRUCT,
-            temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
-            top_p=float(os.getenv("TTS_TOP_P", 0.9)),
-            top_k=int(os.getenv("TTS_TOP_K", 40)),
-            repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
-        )
-        # Cache the prompt
-        cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT)
+        # Retrieve the cached prompt using the CORRECT 4-field key the library uses.
+        cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT.strip(), False, True)
         if hasattr(model, "_voice_prompt_cache") and cache_key in model._voice_prompt_cache:
-            _cached_voice_clone_prompt = model._voice_prompt_cache[cache_key]
-            print(f"Voice clone prompt cached successfully.")
+            vcp, ref_ids = model._voice_prompt_cache[cache_key]
+            _cached_voice_clone_prompt = vcp
+            print("Voice clone prompt cached successfully.")
         else:
             print("Warning: voice clone prompt cache not found; will re-encode on each request.")
             _cached_voice_clone_prompt = None
+
         print("TTS warm-up complete. Model is ready.")
         return True
     except Exception as e:

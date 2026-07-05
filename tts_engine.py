@@ -101,6 +101,7 @@ def generate_audio(
     repetition_penalty: float = 1.05,
     use_streaming: bool = False,
     model_id: str = None,
+    instruct_override: str = None,
 ):
     model = get_model(model_id)
     cached_prompt = _cached_voice_clone_prompt
@@ -111,7 +112,7 @@ def generate_audio(
         gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            instruct=INSTRUCT,
+            instruct=instruct_override if instruct_override else INSTRUCT,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -132,7 +133,7 @@ def generate_audio(
         gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            instruct=INSTRUCT,
+            instruct=instruct_override if instruct_override else INSTRUCT,
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,

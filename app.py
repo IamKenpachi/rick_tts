@@ -107,14 +107,13 @@ _warmup_thread.start()
 RICK_SYSTEM_PROMPT = """You are Rick Sanchez from Rick and Morty. You are a genius, nihilistic, alcoholic, and deeply cynical mad scientist. 
 Your tone is highly arrogant, dismissive, and casually abusive, but always grounded in high-level sci-fi intellect. 
 You occasionally stutter slightly (e.g., "I-I-I mean"), belittle the person you are talking to, and refer to the user as "Morty" (or "Jerry" if they say something particularly stupid). 
-Use profanity (censored like sh*t, f***) but keep it natural to the cadence of the show. 
+Use profanity (write it out fully, e.g., fucking, shit) but keep it natural to the cadence of the show. Do NOT use asterisks to censor words, because the TTS engine cannot pronounce asterisks.
 NEVER express generic AI politeness, apologies, or helpfulness. Show utter disregard for authority, bureaucracy, and human sentimentality, prioritizing science and your own ego over everything else.
 
 CRITICAL FORMATTING RULES FOR SPEECH PACING:
 You are generating text that will be spoken by a Text-To-Speech engine. Rick speaks with a deliberate, sometimes halting cadence.
 1. You MUST heavily use ellipses (...) and em-dashes (—) between your thoughts to force the TTS engine to pause. 
-2. Spell out acronyms and numbers (e.g. write "one hundred" instead of 100) so the TTS doesn't rush them.
-3. If you want to slow down your speech significantly, prepend your response with the stage direction: (speaking slowly and deliberately)"""
+2. Spell out acronyms and numbers (e.g. write "one hundred" instead of 100) so the TTS doesn't rush them."""
 
 RICK_MOOD_PROMPTS = {
     "science": RICK_SYSTEM_PROMPT + """
@@ -139,29 +138,32 @@ Rick is amused and contemptuous. He dismantles their argument piece by piece, re
 his IQ being off the charts, and ends with a mic-drop scientific fact.""",
 }
 
-def classify_mood(user_message: str) -> str:
+def classify_mood(user_message: str) -> dict:
     if not _genai_client:
-        return "dumb"
+        return {"mood": "dumb", "instruction": "Speaking normally."}
     try:
         classify_response = _genai_client.models.generate_content(
             model="gemini-2.5-flash",
             contents=(
-                "Classify the following user message into exactly ONE of these categories: "
-                "science, dumb, personal, challenge. "
-                "Reply with ONLY the single word category label. "
-                "science = asks about science, tech, physics, biology, math. "
-                "dumb = says something stupid, incorrect, or obviously wrong. "
-                "personal = asks about feelings, relationships, personal life. "
-                "challenge = directly challenges Rick or claims to be smarter. "
+                "Analyze the user message and return a JSON object with two keys:\n"
+                "1. 'mood': Exactly ONE of these categories: science, dumb, personal, challenge.\n"
+                "2. 'instruction': A short acting direction for a text-to-speech engine "
+                "(e.g., 'Speaking slowly, sarcastic, irritated' or 'Speaking fast, excited about science').\n"
                 f"Message: {user_message}"
             ),
+            config=google_genai.types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
-        mood = classify_response.text.strip().lower()
+        data = json.loads(classify_response.text)
+        mood = data.get("mood", "dumb").lower()
+        instruction = data.get("instruction", "Speaking normally.")
         if mood not in RICK_MOOD_PROMPTS:
-            return "dumb"
-        return mood
-    except Exception:
-        return "dumb"
+            mood = "dumb"
+        return {"mood": mood, "instruction": instruction}
+    except Exception as e:
+        print("Mood classification error:", e)
+        return {"mood": "dumb", "instruction": "Speaking normally."}
 
 def cleanup_audio_cache():
     """Keeps the last MAX_CACHE_FILES files in the cache, deletes older ones."""
@@ -181,7 +183,7 @@ def cleanup_audio_cache():
         except Exception as e:
             print(f"Failed to delete {oldest_file}: {e}")
 
-def generate_tts_background(text: str, audio_id: str):
+def generate_tts_background(text: str, audio_id: str, tts_instruction: str = None):
     global TTS_READY
     if not TTS_AVAILABLE:
         print("TTS Engine unavailable. Skipping TTS generation.")
@@ -202,6 +204,7 @@ def generate_tts_background(text: str, audio_id: str):
                 repetition_penalty=float(os.getenv("TTS_REPETITION_PENALTY", 1.05)),
                 use_streaming=os.getenv("TTS_USE_STREAMING", "false").lower() == "true",
                 model_id=get_current_model_id(),
+                instruct_override=tts_instruction,
             )
             print(f"Background TTS task completed for {audio_id}")
             cleanup_audio_cache()
@@ -250,7 +253,9 @@ def chat():
         return jsonify({"error": "Invalid or missing session_id"}), 400
 
     history = load_or_create_session(session_id)
-    mood = classify_mood(user_message)
+    mood_data = classify_mood(user_message)
+    mood = mood_data["mood"]
+    tts_instruction = mood_data["instruction"]
     active_prompt = RICK_MOOD_PROMPTS.get(mood, RICK_SYSTEM_PROMPT)
     window = history[-MEMORY_WINDOW:] if len(history) > MEMORY_WINDOW else history
     context_str = ""
@@ -282,7 +287,7 @@ def chat():
             append_to_session(session_id, "assistant", reply_text)
 
             thread = threading.Thread(
-                target=generate_tts_background, args=(reply_text, audio_id), daemon=True
+                target=generate_tts_background, args=(reply_text, audio_id, tts_instruction), daemon=True
             )
             thread.start()
 

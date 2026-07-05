@@ -19,15 +19,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await res.json();
             const indicator = document.getElementById('tts-status-indicator');
             const text = document.getElementById('tts-status-text');
+            const overlay = document.getElementById("loading-overlay");
+            
             if (data.ready) {
                 indicator.className = 'status-chip status-ready';
                 text.textContent = 'TTS: Ready';
-                // Stop polling once ready
+                overlay.style.display = 'none'; // Hide overlay when ready
             } else if (!data.available) {
                 indicator.className = 'status-chip status-warming';
                 text.textContent = 'TTS: Unavailable';
+                overlay.style.display = 'flex'; // Show overlay
             } else {
-                // Still warming up — poll again in 5 seconds
+                // Still warming up
+                indicator.className = 'status-chip status-warming';
+                text.textContent = 'TTS: Warming up...';
+                overlay.style.display = 'flex'; // Show overlay
                 setTimeout(checkTtsStatus, 5000);
             }
         } catch (e) {

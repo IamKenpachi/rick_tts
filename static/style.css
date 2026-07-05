@@ -502,7 +502,7 @@ textarea {
     height: 100vh;
     background: rgba(10, 11, 20, 0.7);
     z-index: 99999; /* Ensure it is on top of everything */
-    display: none; /* Changed to flex via JS */
+    display: flex; /* Changed to flex by default, hidden via JS when ready */
     flex-direction: column;
     justify-content: center;
     align-items: center;

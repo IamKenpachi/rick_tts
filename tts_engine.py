@@ -92,8 +92,13 @@ def warmup_model(model_id: str = None):
         
         is_custom_voice = "CustomVoice" in get_current_model_id()
         speaker = "default"
-        if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
-            speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
+        if is_custom_voice:
+            if hasattr(model, "speech_tokenizer") and hasattr(model.speech_tokenizer, "speakers") and model.speech_tokenizer.speakers:
+                speaker = list(model.speech_tokenizer.speakers.keys())[0] if isinstance(model.speech_tokenizer.speakers, dict) else model.speech_tokenizer.speakers[0]
+            elif hasattr(model.model, "speakers") and model.model.speakers:
+                speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
+            else:
+                speaker = "eric" # Safe fallback for 1.7B-CustomVoice
         
         if not getattr(model, "_warmed_up", False):
             print("Running silent inference pass to capture CUDA graphs...")
@@ -170,8 +175,13 @@ def generate_audio(
     cached_prompt = _cached_voice_clone_prompt
     is_custom_voice = "CustomVoice" in get_current_model_id()
     speaker = "default"
-    if is_custom_voice and hasattr(model.model, "speakers") and model.model.speakers:
-        speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
+    if is_custom_voice:
+        if hasattr(model, "speech_tokenizer") and hasattr(model.speech_tokenizer, "speakers") and model.speech_tokenizer.speakers:
+            speaker = list(model.speech_tokenizer.speakers.keys())[0] if isinstance(model.speech_tokenizer.speakers, dict) else model.speech_tokenizer.speakers[0]
+        elif hasattr(model.model, "speakers") and model.model.speakers:
+            speaker = list(model.model.speakers.keys())[0] if isinstance(model.model.speakers, dict) else model.model.speakers[0]
+        else:
+            speaker = "eric" # Safe fallback for 1.7B-CustomVoice
 
     if use_streaming:
         audio_chunks = []

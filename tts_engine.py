@@ -34,7 +34,7 @@ SUPPORTED_MODELS = {
     "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "1.7B Custom": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
 }
-DEFAULT_MODEL_SIZE = "1.7B Custom"
+DEFAULT_MODEL_SIZE = "1.7B"
 
 LANGUAGE = "English"
 INSTRUCT = """You are Rick Sanchez from Rick and Morty. You are a genius, nihilistic, alcoholic, and deeply cynical mad scientist. 

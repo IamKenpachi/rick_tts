@@ -3,8 +3,13 @@ import soundfile as sf
 from pathlib import Path
 from faster_qwen3_tts import FasterQwen3TTS
 
-# Singleton model instance
 _model = None
+_current_model_id = None
+SUPPORTED_MODELS = {
+    "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+}
+DEFAULT_MODEL_SIZE = "1.7B"
 
 LANGUAGE = "English"
 INSTRUCT = """You are Rick Sanchez from Rick and Morty. You are a genius, nihilistic, alcoholic, and deeply cynical mad scientist. 
@@ -19,12 +24,26 @@ Listen Jerry, I don't want to overstep my bounds or anything.  It's your house, 
 Then the bell rings, they give you a carton of milk and a piece of paper that says you can go take a dump or something.  I mean, it's not a place for smart people, Jerry.
 """
 
-def get_model():
-    global _model
+def get_model(model_id: str = None):
+    global _model, _current_model_id
+    import torch
+
+    if model_id is None:
+        model_id = _current_model_id or SUPPORTED_MODELS[DEFAULT_MODEL_SIZE]
+
+    if _model is not None and _current_model_id != model_id:
+        print(f"Unloading model {_current_model_id} to load {model_id}...")
+        del _model
+        _model = None
+        _current_model_id = None
+        torch.cuda.empty_cache()
+        print("Old model unloaded. GPU memory freed.")
+
     if _model is None:
-        print("Loading Model and capturing CUDA Graph...")
+        print(f"Loading model {model_id} and capturing CUDA Graph...")
         try:
-            _model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
+            _model = FasterQwen3TTS.from_pretrained(model_id)
+            _current_model_id = model_id
         except ValueError as e:
             if "CUDA graphs require CUDA device" in str(e):
                 raise RuntimeError(
@@ -34,41 +53,42 @@ def get_model():
             raise e
     return _model
 
-def warmup_model():
-    """
-    Pre-loads the TTS model and runs a silent warm-up pass to compile CUDA graphs.
-    Call this once at server startup in a background thread.
-    Returns True if successful, False if an error occurred.
-    """
+def get_current_model_id() -> str:
+    return _current_model_id or SUPPORTED_MODELS[DEFAULT_MODEL_SIZE]
+
+def warmup_model(model_id: str = None):
     try:
-        model = get_model()  # triggers lazy load and CUDA graph compilation
+        model = get_model(model_id)
         print("TTS warm-up: model loaded. Running silent inference pass...")
-        # Run one minimal generation pass to finalize CUDA graph compilation.
-        # We use a very short phrase and discard the result.
-        for _chunk, _sr, _timing in model.generate_voice_clone_streaming(
+        _audio_list, _sr = model.generate_voice_clone(
             text="Ready.",
             language=LANGUAGE,
             ref_audio=REFERENCE_AUDIO,
             ref_text=REFERENCE_TEXT,
             instruct=INSTRUCT,
-            chunk_size=8,
             temperature=0.85,
             top_p=0.9,
-        ):
-            break  # only need one chunk to finalize graph; discard output
+        )
         print("TTS warm-up complete. Model is ready.")
         return True
     except Exception as e:
         print(f"TTS warm-up failed: {e}")
         return False
 
-def generate_audio(text: str, output_path: str, chunk_size: int = 8, temperature: float = 0.85, top_p: float = 0.9):
-    model = get_model()
-    
-    audio_chunks = []
-    sr = 24000 # default fallback
-    
-    try:
+def generate_audio(
+    text: str,
+    output_path: str,
+    chunk_size: int = 8,
+    temperature: float = 0.85,
+    top_p: float = 0.9,
+    use_streaming: bool = False,
+    model_id: str = None,
+):
+    model = get_model(model_id)
+
+    if use_streaming:
+        audio_chunks = []
+        sr = 24000
         for audio_chunk, sr, timing in model.generate_voice_clone_streaming(
             text=text,
             language=LANGUAGE,
@@ -80,15 +100,23 @@ def generate_audio(text: str, output_path: str, chunk_size: int = 8, temperature
             top_p=top_p,
         ):
             audio_chunks.append(audio_chunk)
-    except KeyboardInterrupt:
-        print("\nStopped by user.")
-        return None
-    
-    if audio_chunks:
+        if not audio_chunks:
+            return None
         final_audio = np.concatenate(audio_chunks)
-        # Ensure the directory exists
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        sf.write(output_path, final_audio, sr)
-        return output_path
-    
-    return None
+    else:
+        audio_list, sr = model.generate_voice_clone(
+            text=text,
+            language=LANGUAGE,
+            ref_audio=REFERENCE_AUDIO,
+            ref_text=REFERENCE_TEXT,
+            instruct=INSTRUCT,
+            temperature=temperature,
+            top_p=top_p,
+        )
+        if not audio_list:
+            return None
+        final_audio = np.concatenate(audio_list)
+
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    sf.write(output_path, final_audio, sr)
+    return output_path

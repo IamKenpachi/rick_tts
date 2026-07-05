@@ -23,6 +23,51 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     checkTtsStatus(); // kick off immediately on page load
 
+    const modelSelect = document.getElementById("model-select");
+
+    async function syncModelDropdown() {
+        try {
+            const res = await fetch("/current_model");
+            const data = await res.json();
+            if (data.model_id) {
+                if (data.model_id.includes("0.6B")) modelSelect.value = "0.6B";
+                else if (data.model_id.includes("1.7B")) modelSelect.value = "1.7B";
+            }
+        } catch (e) {
+            console.warn("Could not fetch current model:", e);
+        }
+    }
+    syncModelDropdown();
+
+    modelSelect.addEventListener("change", async function() {
+        const selectedSize = this.value;
+        modelSelect.disabled = true;
+        const indicator = document.getElementById("tts-status-indicator");
+        const statusText = document.getElementById("tts-status-text");
+        indicator.className = "status-chip status-warming";
+        statusText.textContent = "TTS: Switching to " + selectedSize + "...";
+        try {
+            const res = await fetch("/switch_model", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ model_size: selectedSize })
+            });
+            if (!res.ok) {
+                const err = await res.json();
+                alert("Failed to switch model: " + err.error);
+                modelSelect.disabled = false;
+                return;
+            }
+            setTimeout(() => {
+                modelSelect.disabled = false;
+                checkTtsStatus();
+            }, 2000);
+        } catch (e) {
+            alert("Network error: " + e.message);
+            modelSelect.disabled = false;
+        }
+    });
+
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const chatContainer = document.getElementById('chat-container');
@@ -116,7 +161,7 @@ document.addEventListener('DOMContentLoaded', () => {
             `;
             
             // Start polling for audio (NEW-08: starts at 2000ms)
-            pollAudioStatus(data.audio_id, 2000);
+            pollAudioStatus(data.audio_id, 2000, 0);
 
         } catch (error) {
             loadingDiv.removeAttribute('id');
@@ -128,44 +173,72 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // NEW-08: Exponential backoff polling
-    async function pollAudioStatus(audioId, interval = 2000) {
-        const btn = document.getElementById(`play-${audioId}`);
+    const MAX_POLL_ATTEMPTS = 200;
+
+    async function pollAudioStatus(audioId, interval = 2000, attempts = 0) {
+        const btn = document.getElementById("play-" + audioId);
         if (!btn) return;
 
+        if (attempts >= MAX_POLL_ATTEMPTS) {
+            btn.disabled = false;
+            btn.innerHTML = "<i class='fas fa-exclamation-triangle'></i> Timed Out";
+            btn.title = "TTS generation took too long. The server may be overloaded.";
+            return;
+        }
+
         try {
-            const response = await fetch(`/audio_status/${audioId}`);
+            const response = await fetch("/audio_status/" + audioId);
             const data = await response.json();
 
             if (data.ready) {
                 btn.disabled = false;
-                btn.innerHTML = `<i class="fas fa-play"></i> Play Voice`;
+                btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
+                btn._audio = null;
                 btn.onclick = () => {
-                    const audio = new Audio(`/audio/${audioId}`);
-                    btn.classList.add('playing');
-                    btn.innerHTML = `<i class="fas fa-volume-up"></i> Playing...`;
-                    audio.play();
+                    if (btn._audio) {
+                        btn._audio.pause();
+                        btn._audio.currentTime = 0;
+                        btn._audio = null;
+                    }
+                    const audio = new Audio("/audio/" + audioId);
+                    btn._audio = audio;
+                    btn.disabled = true;
+                    btn.classList.add("playing");
+                    btn.innerHTML = "<i class='fas fa-volume-up'></i> Playing...";
+                    audio.play().catch(err => {
+                        console.error("Audio play error:", err);
+                        btn.disabled = false;
+                        btn.classList.remove("playing");
+                        btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
+                        btn._audio = null;
+                    });
                     audio.onended = () => {
-                        btn.classList.remove('playing');
-                        btn.innerHTML = `<i class="fas fa-play"></i> Play Voice`;
+                        btn.disabled = false;
+                        btn.classList.remove("playing");
+                        btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
+                        btn._audio = null;
                     };
                 };
+            } else if (data.failed) {
+                btn.disabled = false;
+                btn.innerHTML = "<i class='fas fa-exclamation-triangle'></i> Voice Failed";
+                btn.title = "TTS Error: " + (data.error || "Unknown error");
             } else {
-                // NEW-09: After 30 seconds of polling, change the button text to indicate queuing
                 if (interval >= 5000 && btn.innerHTML.includes("Generating Voice")) {
-                    btn.innerHTML = `<i class="fas fa-clock"></i> Queued...`;
+                    btn.innerHTML = "<i class='fas fa-clock'></i> Queued...";
                 }
-                const nextInterval = Math.min(interval * 1.5, 8000); // cap at 8s
-                setTimeout(() => pollAudioStatus(audioId, nextInterval), interval);
+                const nextInterval = Math.min(interval * 1.5, 8000);
+                setTimeout(() => pollAudioStatus(audioId, nextInterval, attempts + 1), interval);
             }
         } catch (error) {
             console.error("Polling error:", error);
             btn.disabled = false;
-            btn.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Audio Failed (click to retry)`;
+            btn.innerHTML = "<i class='fas fa-exclamation-triangle'></i> Retry Audio";
             btn.onclick = () => {
                 btn.disabled = true;
-                btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Retrying...`;
-                pollAudioStatus(audioId, 2000); // reset interval on retry
+                btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> Retrying...";
+                btn.onclick = null;
+                pollAudioStatus(audioId, 2000, 0);
             };
         }
     }

@@ -10,7 +10,7 @@ import time
 from collections import defaultdict
 
 try:
-    from tts_engine import generate_audio, warmup_model
+    from tts_engine import generate_audio, warmup_model, get_current_model_id, SUPPORTED_MODELS
     TTS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: TTS engine not available: {e}")
@@ -18,6 +18,7 @@ except ImportError as e:
 
 TTS_READY = False  # becomes True when warmup_model() finishes successfully
 _tts_semaphore = threading.Semaphore(1)  # Only 1 TTS job at a time (model is not thread-safe)
+_model_switch_lock = threading.Lock()
 
 # Load environment variables
 load_dotenv()
@@ -68,9 +69,16 @@ NEVER express generic AI politeness, apologies, or helpfulness. Show utter disre
 
 def cleanup_audio_cache():
     """Keeps the last MAX_CACHE_FILES files in the cache, deletes older ones."""
-    files = sorted(AUDIO_CACHE_DIR.glob("*.wav"), key=lambda p: p.stat().st_mtime)
-    while len(files) > MAX_CACHE_FILES:
-        oldest_file = files.pop(0)
+    # Delete all .error sentinel files immediately
+    for error_file in AUDIO_CACHE_DIR.glob("*.error"):
+        try:
+            error_file.unlink()
+        except Exception as e:
+            print(f"Failed to delete error sentinel {error_file}: {e}")
+    # Keep only the last MAX_CACHE_FILES .wav files
+    wav_files = sorted(AUDIO_CACHE_DIR.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    while len(wav_files) > MAX_CACHE_FILES:
+        oldest_file = wav_files.pop(0)
         try:
             oldest_file.unlink()
             print(f"Deleted old cache file: {oldest_file}")
@@ -93,12 +101,19 @@ def generate_tts_background(text: str, audio_id: str):
                 output_path=str(output_path),
                 chunk_size=int(os.getenv("TTS_CHUNK_SIZE", 8)),
                 temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
-                top_p=float(os.getenv("TTS_TOP_P", 0.9))
+                top_p=float(os.getenv("TTS_TOP_P", 0.9)),
+                use_streaming=os.getenv("TTS_USE_STREAMING", "false").lower() == "true",
+                model_id=get_current_model_id(),
             )
             print(f"Background TTS task completed for {audio_id}")
             cleanup_audio_cache()
         except Exception as e:
             print(f"TTS generation failed for {audio_id}: {e}")
+            try:
+                error_path = AUDIO_CACHE_DIR / f"{audio_id}.error"
+                error_path.write_text(str(e))
+            except Exception as write_err:
+                print(f"Could not write error sentinel for {audio_id}: {write_err}")
 
 @app.route("/")
 def index():
@@ -125,6 +140,10 @@ def chat():
     if not data:
         return jsonify({"error": "Request must be JSON with Content-Type: application/json"}), 400
     user_message = data.get("message", "")
+    
+    MAX_MESSAGE_LENGTH = int(os.getenv("MAX_MESSAGE_LENGTH", 1000))
+    if len(user_message) > MAX_MESSAGE_LENGTH:
+        return jsonify({"error": f"Message too long. Maximum {MAX_MESSAGE_LENGTH} characters."}), 400
     
     if not user_message:
         return jsonify({"error": "Message is required"}), 400
@@ -157,8 +176,45 @@ def chat():
 def audio_status(audio_id):
     if not UUID_PATTERN.match(audio_id):
         return jsonify({"error": "Invalid audio_id"}), 400
-    file_path = AUDIO_CACHE_DIR / f"{audio_id}.wav"
-    return jsonify({"ready": file_path.exists()})
+    wav_path = AUDIO_CACHE_DIR / f"{audio_id}.wav"
+    error_path = AUDIO_CACHE_DIR / f"{audio_id}.error"
+    if wav_path.exists():
+        return jsonify({"ready": True, "failed": False})
+    if error_path.exists():
+        error_msg = error_path.read_text()
+        return jsonify({"ready": False, "failed": True, "error": error_msg})
+    return jsonify({"ready": False, "failed": False})
+
+@app.route("/switch_model", methods=["POST"])
+def switch_model():
+    global TTS_READY
+    if not TTS_AVAILABLE:
+        return jsonify({"error": "TTS engine not available"}), 503
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Request must be JSON"}), 400
+    model_size = data.get("model_size", "").strip()
+    if model_size not in SUPPORTED_MODELS:
+        return jsonify({"error": f"Invalid model_size. Must be one of: {list(SUPPORTED_MODELS.keys())}"}), 400
+    model_id = SUPPORTED_MODELS[model_size]
+    TTS_READY = False
+    def _reload_model_background():
+        global TTS_READY
+        print(f"Switching TTS model to: {model_id}...")
+        success = warmup_model(model_id=model_id)
+        TTS_READY = success
+    reload_thread = threading.Thread(target=_reload_model_background, daemon=True)
+    reload_thread.start()
+    return jsonify({"status": "switching", "model_id": model_id})
+
+@app.route("/current_model", methods=["GET"])
+def current_model():
+    if not TTS_AVAILABLE:
+        return jsonify({"model_id": None, "available": False})
+    try:
+        return jsonify({"model_id": get_current_model_id(), "available": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/audio/<audio_id>", methods=["GET"])
 def get_audio(audio_id):

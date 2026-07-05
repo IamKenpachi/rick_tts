@@ -384,3 +384,28 @@ textarea {
     color: var(--text-muted);
     margin-top: 10px;
 }
+
+.model-select {
+    background: rgba(20, 23, 45, 0.9);
+    border: 1px solid var(--border-glow);
+    color: var(--text-primary);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.8rem;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.model-select:hover, .model-select:focus {
+    border-color: var(--portal-green-dim);
+    box-shadow: 0 0 10px rgba(57,255,20,0.15);
+}
+.model-select option {
+    background: #0e1020;
+    color: var(--text-primary);
+}
+.model-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

@@ -541,8 +541,8 @@ def chat():
             )
             thread.start()
 
-            # Signal stream end with audio_id and mood
-            yield f"data: {json.dumps({'done': True, 'audio_id': audio_id, 'mood': mood, 'session_id': session_id})}\n\n"
+            # Signal stream end with audio_id, mood, and instruction
+            yield f"data: {json.dumps({'done': True, 'audio_id': audio_id, 'mood': mood, 'session_id': session_id, 'instruction': tts_instruction})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
@@ -586,6 +586,31 @@ def delete_session(session_id):
     if history_file.exists():
         history_file.unlink()
     return jsonify({"deleted": session_id})
+
+@app.route("/regenerate_audio", methods=["POST"])
+def regenerate_audio():
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Invalid request"}), 400
+    text = data.get("text")
+    audio_id = data.get("audio_id")
+    instruction = data.get("instruction")
+    
+    if not text or not audio_id:
+        return jsonify({"error": "Missing text or audio_id"}), 400
+        
+    old_file = AUDIO_CACHE_DIR / f"{audio_id}.wav"
+    old_error = AUDIO_CACHE_DIR / f"{audio_id}.error"
+    if old_file.exists():
+        old_file.unlink()
+    if old_error.exists():
+        old_error.unlink()
+        
+    thread = threading.Thread(
+        target=generate_tts_background, args=(text, audio_id, instruction), daemon=True
+    )
+    thread.start()
+    return jsonify({"status": "started", "audio_id": audio_id})
 
 @app.route("/audio_status/<audio_id>", methods=["GET"])
 def audio_status(audio_id):

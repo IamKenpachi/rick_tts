@@ -6,6 +6,9 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    let currentPlayingAudio = null;
+    let currentPlayingBtn = null;
+
     let currentSessionId = localStorage.getItem('rick_session_id');
     if (!currentSessionId) {
         currentSessionId = generateUUID();
@@ -273,28 +276,58 @@ document.addEventListener('DOMContentLoaded', () => {
                 const regenBtn = document.getElementById("regen-" + audioId);
                 if (regenBtn) regenBtn.style.display = "inline-block";
                 btn.onclick = () => {
-                    if (btn._audio) {
-                        btn._audio.pause();
-                        btn._audio.currentTime = 0;
-                        btn._audio = null;
+                    // If clicking the same button that's active
+                    if (currentPlayingBtn === btn) {
+                        if (!currentPlayingAudio.paused) {
+                            currentPlayingAudio.pause();
+                            btn.innerHTML = "<i class='fas fa-play'></i> Resume";
+                            btn.classList.remove("playing");
+                        } else {
+                            currentPlayingAudio.play();
+                            btn.innerHTML = "<i class='fas fa-pause'></i> Pause";
+                            btn.classList.add("playing");
+                        }
+                        return;
                     }
-                    const audio = new Audio("/audio/" + audioId);
-                    btn._audio = audio;
-                    btn.disabled = true;
+
+                    // Stop whatever is playing globally
+                    if (currentPlayingAudio) {
+                        currentPlayingAudio.pause();
+                        currentPlayingAudio.currentTime = 0;
+                        if (currentPlayingBtn) {
+                            currentPlayingBtn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
+                            currentPlayingBtn.classList.remove("playing");
+                        }
+                    }
+
+                    if (!btn._audio) {
+                        btn._audio = new Audio("/audio/" + audioId);
+                    } else {
+                        btn._audio.currentTime = 0; // Play from beginning if starting fresh
+                    }
+                    
+                    currentPlayingAudio = btn._audio;
+                    currentPlayingBtn = btn;
+                    
                     btn.classList.add("playing");
-                    btn.innerHTML = "<i class='fas fa-volume-up'></i> Playing...";
-                    audio.play().catch(err => {
+                    btn.innerHTML = "<i class='fas fa-pause'></i> Pause";
+                    
+                    currentPlayingAudio.play().catch(err => {
                         console.error("Audio play error:", err);
-                        btn.disabled = false;
                         btn.classList.remove("playing");
                         btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
-                        btn._audio = null;
+                        currentPlayingAudio = null;
+                        currentPlayingBtn = null;
                     });
-                    audio.onended = () => {
-                        btn.disabled = false;
+                    
+                    currentPlayingAudio.onended = () => {
                         btn.classList.remove("playing");
                         btn.innerHTML = "<i class='fas fa-play'></i> Play Voice";
-                        btn._audio = null;
+                        if (currentPlayingBtn === btn) {
+                            currentPlayingAudio = null;
+                            currentPlayingBtn = null;
+                        }
+                        btn._audio.currentTime = 0; 
                     };
                 };
             } else if (data.failed) {
@@ -427,6 +460,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (playBtn._audio) {
             playBtn._audio.pause();
             playBtn._audio = null;
+        }
+        if (currentPlayingBtn === playBtn) {
+            currentPlayingAudio = null;
+            currentPlayingBtn = null;
         }
 
         try {

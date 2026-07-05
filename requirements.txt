@@ -11,3 +11,4 @@ pydub
 flask
 google-genai
 python-dotenv
+qwentts-cpp-python

@@ -50,6 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await res.json();
             if (data.model_id) {
                 if (data.model_id.includes("CustomVoice")) modelSelect.value = "1.7B Custom";
+                else if (data.model_id.includes("GGUF")) modelSelect.value = "1.7B GGUF";
                 else if (data.model_id.includes("1.7B")) modelSelect.value = "1.7B";
                 else if (data.model_id.includes("0.6B")) modelSelect.value = "0.6B";
             }

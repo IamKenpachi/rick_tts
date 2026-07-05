@@ -2,7 +2,9 @@ import numpy as np
 import soundfile as sf
 import os
 from pathlib import Path
+import torch
 from faster_qwen3_tts import FasterQwen3TTS
+from huggingface_hub import hf_hub_download
 
 # --- MONKEY PATCH FOR 0.6B MODEL ---
 try:
@@ -33,8 +35,13 @@ SUPPORTED_MODELS = {
     "0.6B": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
     "1.7B": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "1.7B Custom": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+    "1.7B GGUF": {
+        "repo_id": "Serveurperso/Qwen3-TTS-GGUF",
+        "talker_file": "qwen-talker-1.7b-base-Q4_K_M.gguf",
+        "codec_file": "qwen-tokenizer-12hz-Q4_K_M.gguf"
+    }
 }
-DEFAULT_MODEL_SIZE = "1.7B"
+DEFAULT_MODEL_SIZE = "1.7B GGUF"
 
 LANGUAGE = "English"
 INSTRUCT = """You are Rick Sanchez from Rick and Morty. You are a genius, nihilistic, alcoholic, and deeply cynical mad scientist. 
@@ -51,10 +58,11 @@ Then the bell rings, they give you a carton of milk and a piece of paper that sa
 
 def get_model(model_id: str = None):
     global _model, _current_model_id
-    import torch
-
+    
     if model_id is None:
-        model_id = _current_model_id or SUPPORTED_MODELS[DEFAULT_MODEL_SIZE]
+        model_id = _current_model_id or DEFAULT_MODEL_SIZE
+    
+    model_info = SUPPORTED_MODELS.get(model_id, SUPPORTED_MODELS[DEFAULT_MODEL_SIZE])
 
     if _model is not None and _current_model_id != model_id:
         print(f"Unloading model {_current_model_id} to load {model_id}...")
@@ -65,9 +73,32 @@ def get_model(model_id: str = None):
         print("Old model unloaded. GPU memory freed.")
 
     if _model is None:
-        print(f"Loading model {model_id} and capturing CUDA Graph...")
+        print(f"Loading model {model_id}...")
         try:
-            _model = FasterQwen3TTS.from_pretrained(model_id)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            if isinstance(model_info, dict):
+                # GGUF Model handling
+                print(f"Downloading/Locating GGUF files for {model_id}...")
+                talker_path = hf_hub_download(repo_id=model_info["repo_id"], filename=model_info["talker_file"])
+                codec_path = hf_hub_download(repo_id=model_info["repo_id"], filename=model_info["codec_file"])
+                
+                print("Initializing GGML Backend...")
+                _model = FasterQwen3TTS.from_pretrained(
+                    "dummy_model_name",
+                    backend="ggml",
+                    quant="Q4_K_M",
+                    gguf_talker_path=talker_path,
+                    gguf_codec_path=codec_path,
+                    device=device
+                )
+            else:
+                # Standard PyTorch HuggingFace handling
+                _model = FasterQwen3TTS.from_pretrained(
+                    model_info,
+                    device=device,
+                    max_seq_len=4096,
+                    dtype=torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+                )
             _current_model_id = model_id
         except ValueError as e:
             if "CUDA graphs require CUDA device" in str(e):
@@ -79,7 +110,7 @@ def get_model(model_id: str = None):
     return _model
 
 def get_current_model_id() -> str:
-    return _current_model_id or SUPPORTED_MODELS[DEFAULT_MODEL_SIZE]
+    return _current_model_id or DEFAULT_MODEL_SIZE
 
 def get_cached_voice_clone_prompt():
     return _cached_voice_clone_prompt
@@ -139,7 +170,8 @@ def warmup_model(model_id: str = None):
                     append_silence=True,
                 )
 
-        if not is_custom_voice:
+        is_gguf = "GGUF" in get_current_model_id()
+        if not is_custom_voice and not is_gguf:
             # Retrieve the cached prompt using the CORRECT 4-field key the library uses.
             cache_key = (str(REFERENCE_AUDIO), REFERENCE_TEXT.strip(), False, True)
             if hasattr(model, "_voice_prompt_cache") and cache_key in model._voice_prompt_cache:
@@ -151,7 +183,10 @@ def warmup_model(model_id: str = None):
                 _cached_voice_clone_prompt = None
         else:
             _cached_voice_clone_prompt = None
-            print("CustomVoice model initialized successfully.")
+            if is_gguf:
+                print("GGUF model initialized successfully. Caching is handled internally by qwentts-cpp.")
+            else:
+                print("CustomVoice model initialized successfully.")
 
         print("TTS warm-up complete. Model is ready.")
         return True

@@ -43,6 +43,29 @@ def get_model(model_id: str = None):
 
     if _model is None:
         print(f"Loading model {model_id} and capturing CUDA Graph...")
+        
+        # Monkey patch Qwen3TTSModel to prevent device_map="cuda" from causing meta tensor errors
+        # This is a known issue with the 0.6B model on some PyTorch/accelerate combinations.
+        try:
+            from qwen_tts import Qwen3TTSModel
+            orig_from_pretrained = Qwen3TTSModel.from_pretrained
+            
+            @classmethod
+            def custom_from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+                device = kwargs.pop("device_map", None)
+                # Load fully into CPU first to avoid tied-weight meta tensor errors
+                wrapper = orig_from_pretrained.__func__(cls, pretrained_model_name_or_path, *model_args, **kwargs)
+                if device:
+                    wrapper.model = wrapper.model.to(device)
+                    # Qwen3TTSModel caches device in self.device, so we must update it
+                    wrapper.device = next(wrapper.model.parameters()).device
+                return wrapper
+                
+            Qwen3TTSModel.from_pretrained = custom_from_pretrained
+            patched = True
+        except ImportError:
+            patched = False
+
         try:
             _model = FasterQwen3TTS.from_pretrained(model_id)
             _current_model_id = model_id
@@ -53,6 +76,9 @@ def get_model(model_id: str = None):
                     "PyTorch is installed with CUDA support. Cannot run FasterQwen3TTS without GPU."
                 ) from e
             raise e
+        finally:
+            if patched:
+                Qwen3TTSModel.from_pretrained = orig_from_pretrained
     return _model
 
 def get_current_model_id() -> str:

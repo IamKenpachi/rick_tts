@@ -150,7 +150,7 @@ def warmup_model(model_id: str = None):
                     language=LANGUAGE,
                     ref_audio=REFERENCE_AUDIO,
                     ref_text=REFERENCE_TEXT,
-                    instruct=INSTRUCT,
+                    instruct=None if "GGUF" in get_current_model_id() else INSTRUCT,
                     temperature=float(os.getenv("TTS_TEMPERATURE", 0.85)),
                     top_p=float(os.getenv("TTS_TOP_P", 0.9)),
                     top_k=int(os.getenv("TTS_TOP_K", 40)),
@@ -224,7 +224,7 @@ def generate_audio(
         gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            instruct=instruct_override if instruct_override else INSTRUCT,
+            instruct=None if ("GGUF" in get_current_model_id() and not is_custom_voice) else (instruct_override if instruct_override else INSTRUCT),
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
@@ -250,7 +250,7 @@ def generate_audio(
         gen_kwargs = dict(
             text=text,
             language=LANGUAGE,
-            instruct=instruct_override if instruct_override else INSTRUCT,
+            instruct=None if ("GGUF" in get_current_model_id() and not is_custom_voice) else (instruct_override if instruct_override else INSTRUCT),
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,

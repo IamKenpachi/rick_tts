@@ -1,4 +1,28 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // UI-02: Poll TTS status until warm-up is complete
+    async function checkTtsStatus() {
+        try {
+            const res = await fetch('/tts_status');
+            const data = await res.json();
+            const indicator = document.getElementById('tts-status-indicator');
+            const text = document.getElementById('tts-status-text');
+            if (data.ready) {
+                indicator.className = 'status-chip status-ready';
+                text.textContent = 'TTS: Ready';
+                // Stop polling once ready
+            } else if (!data.available) {
+                indicator.className = 'status-chip status-warming';
+                text.textContent = 'TTS: Unavailable';
+            } else {
+                // Still warming up — poll again in 5 seconds
+                setTimeout(checkTtsStatus, 5000);
+            }
+        } catch (e) {
+            setTimeout(checkTtsStatus, 10000); // retry on network error
+        }
+    }
+    checkTtsStatus(); // kick off immediately on page load
+
     const messageInput = document.getElementById('message-input');
     const sendBtn = document.getElementById('send-btn');
     const chatContainer = document.getElementById('chat-container');
@@ -8,9 +32,9 @@ document.addEventListener('DOMContentLoaded', () => {
         this.style.height = 'auto';
         this.style.height = (this.scrollHeight) + 'px';
         if (this.value.trim() !== '') {
-            sendBtn.style.color = 'white';
+            sendBtn.disabled = false;
         } else {
-            sendBtn.style.color = '#8e8ea0';
+            sendBtn.disabled = true;
         }
     });
 
@@ -28,7 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const msgDiv = document.createElement('div');
         msgDiv.className = 'message user-message';
         msgDiv.innerHTML = `
-            <div class="avatar"><i class="fas fa-user"></i></div>
+            <div class="avatar user-avatar">👤</div>
             <div class="message-content">
                 <div class="text">${escapeHTML(text)}</div>
             </div>
@@ -42,7 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
         msgDiv.className = 'message ai-message';
         msgDiv.id = 'loading-message';
         msgDiv.innerHTML = `
-            <div class="avatar"><i class="fas fa-flask"></i></div>
+            <div class="avatar ai-avatar">⚗️</div>
             <div class="message-content">
                 <div class="typing-indicator">
                     <div class="typing-dot"></div>
@@ -91,8 +115,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 </button>
             `;
             
-            // Start polling for audio
-            pollAudioStatus(data.audio_id);
+            // Start polling for audio (NEW-08: starts at 2000ms)
+            pollAudioStatus(data.audio_id, 2000);
 
         } catch (error) {
             loadingDiv.removeAttribute('id');
@@ -100,12 +124,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="text" style="color: #ff6b6b;">Error: ${error.message}</div>
             `;
         } finally {
-            sendBtn.disabled = false;
             scrollToBottom();
         }
     }
 
-    async function pollAudioStatus(audioId) {
+    // NEW-08: Exponential backoff polling
+    async function pollAudioStatus(audioId, interval = 2000) {
         const btn = document.getElementById(`play-${audioId}`);
         if (!btn) return;
 
@@ -118,14 +142,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 btn.innerHTML = `<i class="fas fa-play"></i> Play Voice`;
                 btn.onclick = () => {
                     const audio = new Audio(`/audio/${audioId}`);
+                    btn.classList.add('playing');
+                    btn.innerHTML = `<i class="fas fa-volume-up"></i> Playing...`;
                     audio.play();
+                    audio.onended = () => {
+                        btn.classList.remove('playing');
+                        btn.innerHTML = `<i class="fas fa-play"></i> Play Voice`;
+                    };
                 };
             } else {
-                setTimeout(() => pollAudioStatus(audioId), 1000);
+                // NEW-09: After 30 seconds of polling, change the button text to indicate queuing
+                if (interval >= 5000 && btn.innerHTML.includes("Generating Voice")) {
+                    btn.innerHTML = `<i class="fas fa-clock"></i> Queued...`;
+                }
+                const nextInterval = Math.min(interval * 1.5, 8000); // cap at 8s
+                setTimeout(() => pollAudioStatus(audioId, nextInterval), interval);
             }
         } catch (error) {
             console.error("Polling error:", error);
-            btn.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Failed to load audio`;
+            btn.disabled = false;
+            btn.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Audio Failed (click to retry)`;
+            btn.onclick = () => {
+                btn.disabled = true;
+                btn.innerHTML = `<i class="fas fa-spinner fa-spin"></i> Retrying...`;
+                pollAudioStatus(audioId, 2000); // reset interval on retry
+            };
         }
     }
 

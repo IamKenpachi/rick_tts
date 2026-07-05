@@ -55,6 +55,7 @@ def main():
 
     play = StreamPlayer() if args.stream_play else None
     audio_chunks = []
+    sr = 24000 # default fallback sample rate
 
     print("\nGenerating audio...")
     try:

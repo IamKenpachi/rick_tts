@@ -1,7 +1,6 @@
 import numpy as np
 import soundfile as sf
 from pathlib import Path
-import sys
 from faster_qwen3_tts import FasterQwen3TTS
 
 # Singleton model instance
@@ -14,7 +13,7 @@ You occasionally stutter slightly (e.g., "I-I-I mean"), belittle the person you 
 Use profanity (censored like sh*t, f***) but keep it natural to the cadence of the show. 
 NEVER express generic AI politeness, apologies, or helpfulness. Show utter disregard for authority, bureaucracy, and human sentimentality, prioritizing science and your own ego over everything else."""
 
-REFERENCE_AUDIO = "rick_sanchez.mp3" 
+REFERENCE_AUDIO = str(Path(__file__).parent / "rick_sanchez.mp3")
 REFERENCE_TEXT = """
 Listen Jerry, I don't want to overstep my bounds or anything.  It's your house, it's your world, you're a real Julius Caesar.  But I'll tell you how I feel about school, Jerry.  It's a waste of time.  Bunch of people running around, bumping into each other.  Guy up front says, 2 plus 2.  People in the back say 4.
 Then the bell rings, they give you a carton of milk and a piece of paper that says you can go take a dump or something.  I mean, it's not a place for smart people, Jerry.
@@ -28,10 +27,40 @@ def get_model():
             _model = FasterQwen3TTS.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base")
         except ValueError as e:
             if "CUDA graphs require CUDA device" in str(e):
-                print("Error: CUDA is not available. Please ensure your NVIDIA drivers are up to date and PyTorch is installed with CUDA support.")
-                sys.exit(1)
+                raise RuntimeError(
+                    "CUDA is not available. Ensure your NVIDIA drivers are up to date and "
+                    "PyTorch is installed with CUDA support. Cannot run FasterQwen3TTS without GPU."
+                ) from e
             raise e
     return _model
+
+def warmup_model():
+    """
+    Pre-loads the TTS model and runs a silent warm-up pass to compile CUDA graphs.
+    Call this once at server startup in a background thread.
+    Returns True if successful, False if an error occurred.
+    """
+    try:
+        model = get_model()  # triggers lazy load and CUDA graph compilation
+        print("TTS warm-up: model loaded. Running silent inference pass...")
+        # Run one minimal generation pass to finalize CUDA graph compilation.
+        # We use a very short phrase and discard the result.
+        for _chunk, _sr, _timing in model.generate_voice_clone_streaming(
+            text="Ready.",
+            language=LANGUAGE,
+            ref_audio=REFERENCE_AUDIO,
+            ref_text=REFERENCE_TEXT,
+            instruct=INSTRUCT,
+            chunk_size=8,
+            temperature=0.85,
+            top_p=0.9,
+        ):
+            break  # only need one chunk to finalize graph; discard output
+        print("TTS warm-up complete. Model is ready.")
+        return True
+    except Exception as e:
+        print(f"TTS warm-up failed: {e}")
+        return False
 
 def generate_audio(text: str, output_path: str, chunk_size: int = 8, temperature: float = 0.85, top_p: float = 0.9):
     model = get_model()

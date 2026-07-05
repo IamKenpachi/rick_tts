@@ -8,7 +8,6 @@ torch>=2.5.1
 torchaudio>=2.5.1
 huggingface-hub>=0.36.0,<1.0
 pydub
-
 flask
-google-generativeai
+google-genai
 python-dotenv

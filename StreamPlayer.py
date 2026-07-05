@@ -20,6 +20,7 @@ class StreamPlayer:
         self._stream = None
         self._sample_rate: Optional[int] = None
         self._closed = False
+        self._sd = None
         self._drained = threading.Event()
 
     def _load_sounddevice(self):
@@ -60,8 +61,7 @@ class StreamPlayer:
                 if next_chunk is None:
                     outdata[written:] = 0
                     self._drained.set()
-                    sd = self._load_sounddevice()
-                    raise sd.CallbackStop()
+                    raise self._sd.CallbackStop()
 
                 self._pending = next_chunk
 
@@ -79,6 +79,7 @@ class StreamPlayer:
             return
 
         sd = self._load_sounddevice()
+        self._sd = sd
         self._sample_rate = sample_rate
         self._stream = sd.OutputStream(
             samplerate=sample_rate,
@@ -105,6 +106,7 @@ class StreamPlayer:
         self._queue.put(None)
         if wait:
             self._drained.wait(timeout=timeout)
+            self._drained.clear()
 
         self._stream.close()
         self._stream = None
